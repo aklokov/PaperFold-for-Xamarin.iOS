@@ -49,5 +49,6 @@
     <Compile Include="ShadowView.cs" />
     <Compile Include="TouchThroughUIView.cs" />
     <Compile Include="UIViewScreenshot.cs" />
+    <Compile Include="PanRecognitionDelegate.cs" />
   </ItemGroup>
 </Project>

@@ -209,7 +209,7 @@ namespace PaperFold
 			}
 		}
 
-		private void Unfold(float parentOffset)
+		public void Unfold(float parentOffset)
 		{
 			this.CalculateFoldState (parentOffset);
 

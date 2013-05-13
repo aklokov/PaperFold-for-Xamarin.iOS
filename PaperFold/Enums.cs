@@ -51,5 +51,10 @@ namespace PaperFold
 		PaperFoldInitialPanDirectionVertical = 1
 	}
 
+	public enum PaperFoldSwipeHintViewMode
+	{
+		PaperFoldSwipeHintViewModeSwipeLeft = 0,
+		PaperFoldSwipeHintViewModeSwipeRight = 1,
+	}
 }
 

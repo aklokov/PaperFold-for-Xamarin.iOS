@@ -2,16 +2,33 @@ using System;
 using MonoTouch.UIKit;
 using System.Drawing;
 using MonoTouch.Foundation;
+using MonoTouch.CoreGraphics;
+using System.Threading;
 
 namespace PaperFold
 {
 	public class PaperFoldView : UIView
 	{
-
-		private UIPanGestureRecognizer panGestureRecognizer;
+	
+		private UIPanGestureRecognizer PanGestureRecognizer {
+			get;
+			set;
+		}
 
 		// indicate if the divider line should be visible
 		private bool showDividerLines;
+
+		private Action completionHandler;
+
+		public Action<UIView, bool, PaperFoldState> DidFoldAutomaticallToState {
+			get;
+			set;
+		}
+
+		public Action<UIView, PointF> DidOffset {
+			get;
+			set;
+		}
 
 		// main content view
 		public TouchThroughUIView ContentView {
@@ -21,10 +38,12 @@ namespace PaperFold
 
 		// timer to animate folds after gesture ended
 		// manual animation with NSTimer is required to sync the offset of the contentView, with the folding of views
-		public NSTimer AnimationTimer {
+		public Timer AnimationTimer {
 			get;
 			set;
 		}
+
+		private Action animationAction;
 
 		// the fold view on the left and bottom
 		public FoldView BottomFoldView {
@@ -180,8 +199,14 @@ namespace PaperFold
 			this.ContentView.BackgroundColor = UIColor.White;
 			this.ContentView.AutosizesSubviews = true;
 
-			var panGestureRecognizer = new UIPanGestureRecognizer (this.ContentViewPanned);
-			this.ContentView.AddGestureRecognizer (panGestureRecognizer);
+			this.PanGestureRecognizer = new UIPanGestureRecognizer (this.ContentViewPanned);
+
+			var panDelegate = new PanRecognitionDelegate (this);
+
+			this.PanGestureRecognizer.Delegate = panDelegate;
+
+			this.ContentView.AddGestureRecognizer (this.PanGestureRecognizer);
+
 
 			this.LastState = this.State = PaperFoldState.PaperFoldStateDefault;
 
@@ -192,7 +217,12 @@ namespace PaperFold
 
 			this.RestrictedDraggingRect = RectangleF.Empty;
 			this.showDividerLines = false;
+			this.LeftFoldView = new MultiFoldView ();
+			this.RightFoldView = new MultiFoldView ();
+			this.BottomFoldView = new FoldView (new RectangleF(0.0f, 0.0f, 0.0f, 0.0f));
+			this.TopFoldView = new MultiFoldView ();
 		}
+
 
 		public void SetCenterContentView(UIView view)
 		{
@@ -301,25 +331,63 @@ namespace PaperFold
 
 		private void UpdateSideFoldViewFrames(RectangleF frame)
 		{
-			var leftFoldViewFrame = this.LeftFoldView.Frame;
-			leftFoldViewFrame.Height = frame.Height;
-			this.LeftFoldView.Frame = leftFoldViewFrame;
+			if(this.LeftFoldView != null){
+				var leftFoldViewFrame = this.LeftFoldView.Frame;
+				leftFoldViewFrame.Height = frame.Height;
+				this.LeftFoldView.Frame = leftFoldViewFrame;
+			}
 
-			var rightFoldViewFrame = this.RightFoldView.Frame;
-			rightFoldViewFrame.Height = frame.Height;
-			this.RightFoldView.Frame = rightFoldViewFrame;
+			if(this.RightFoldView != null){
+				var rightFoldViewFrame = this.RightFoldView.Frame;
+				rightFoldViewFrame.Height = frame.Height;
+				this.RightFoldView.Frame = rightFoldViewFrame;
+			}
 		}
 
 		private float DisplacementOfMultiFoldView(UIView multiFoldView)
 		{
+			if(multiFoldView == this.RightFoldView){
+				return this.ContentView.Frame.X;
+			} else if (multiFoldView == this.LeftFoldView) {
+				return -1 * this.ContentView.Frame.X;
+			} else if (multiFoldView == this.TopFoldView) {
+				if(this.ContentView.GetType() == typeof(UIScrollView)){
+					var scroll = (UIView)this.ContentView;
+					return -1 * ((UIScrollView)scroll).ContentOffset.Y;
+				} else {
+					return this.ContentView.Frame.Y;
+				}
+			} else if (multiFoldView == this.BottomFoldView) {
+				if(this.ContentView.GetType() == typeof(UIScrollView)){
+					var scroll = (UIView)this.ContentView;
+					return -1 * ((UIScrollView)scroll).ContentOffset.Y;
+				} else {
+					return this.ContentView.Frame.Y;
+				}
+			}
+
 			return 0.0f;
 		}
 
+		void CreateTimer (Action unfoldAction)
+		{
+			this.animationAction = unfoldAction;
+			AutoResetEvent autoEvent = new AutoResetEvent(false);
+			this.AnimationTimer = new Timer (new TimerCallback(this.TimerFire), autoEvent, TimeSpan.FromSeconds(0.01), TimeSpan.FromSeconds(0.01));
+		}
 
+		// This method is called by the timer. 
+		public void TimerFire(Object stateInfo)
+		{
+			this.InvokeOnMainThread (() => {
+				this.animationAction ();
+				Console.WriteLine("Timer Hit");
+			});
+		}
 
 		private void ContentViewPanned(UIPanGestureRecognizer panGestureRecognizer)
 		{
-			if (this.AnimationTimer.IsValid) {
+			if (this.AnimationTimer!= null /*&& this.AnimationTimer.*/) {
 				return;
 			}
 
@@ -391,7 +459,7 @@ namespace PaperFold
 					if((x >= PaperFoldConstants.LeftViewUnfoldThreshold * this.LeftFoldView.Frame.Width && this.State == PaperFoldState.PaperFoldStateDefault) ||
 					   this.ContentView.Frame.X == this.LeftFoldView.Frame.Width){
 						if (this.EnableLeftFoldDragging) {
-							this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.UnFoldLeftView);
+							CreateTimer (this.InternalUnFoldLeftView);
 							return;
 						}
 					}
@@ -399,13 +467,13 @@ namespace PaperFold
 					if((x <=-PaperFoldConstants.RightViewUnfoldThreshold * this.RightFoldView.Frame.Width && this.State == PaperFoldState.PaperFoldStateDefault) ||
 					   this.ContentView.Frame.X ==-this.RightFoldView.Frame.Width){
 						if (this.EnableRightFoldDragging) {
-							this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.UnFoldRightView);
+							CreateTimer (this.InternalUnFoldRightView);
 							return;
 						}
 					}
 				}
 
-				this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.RestoreView);
+				CreateTimer (this.InternalRestoreView);
 			}
 		}
 
@@ -436,7 +504,7 @@ namespace PaperFold
 					if((-y >= PaperFoldConstants.BottomViewUnfoldThreshold * this.BottomFoldView.Frame.Height && this.State == PaperFoldState.PaperFoldStateDefault) ||
 					   -1*this.ContentView.Frame.Y == this.BottomFoldView.Frame.Height){
 						if (this.EnableBottomFoldDragging) {
-							this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.UnFoldBottomView);
+							CreateTimer (this.UnfoldBottomView);
 							return;
 						}
 					}
@@ -444,173 +512,397 @@ namespace PaperFold
 					if((y >= PaperFoldConstants.TopViewUnfoldThreshold * this.TopFoldView.Frame.Height && this.State == PaperFoldState.PaperFoldStateDefault) ||
 					   this.ContentView.Frame.Y == this.TopFoldView.Frame.Height){
 						if (this.EnableTopFoldDragging) {
-							this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.UnFoldTopView);
+							CreateTimer (this.InternalUnFoldTopView);
 							return;
 						}
 					}
 				}
 
-				this.AnimationTimer = NSTimer.CreateTimer (TimeSpan.FromSeconds(0.01), this.RestoreView);
+				this.CreateTimer (this.InternalRestoreView);
 			}
 		}
-		
-		private void UnFoldLeftView()
+
+		private void InternalUnFoldBottomView()
 		{
+			this.TopFoldView.Hidden = false;
+			this.BottomFoldView.Hidden = false;
+			this.LeftFoldView.Hidden = true;
+			this.RightFoldView.Hidden = true;
+
+			this.PaperFoldInitialPanDirection = PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionVertical;
+
+			var transform = this.ContentView.Transform;
+
+			var y = transform.y0 - (this.BottomFoldView.Frame.Height + transform.y0)/4;
+
+			transform = CGAffineTransform.MakeTranslation (0.0f, y);
+			this.ContentView.Transform = transform;
+
+			if(-y >= this.BottomFoldView.Frame.Height-2){
+				this.AnimationTimer.Dispose ();
+				transform = CGAffineTransform.MakeTranslation (0.0f, -1 * this.BottomFoldView.Frame.Height);
+				this.ContentView.Transform = transform;
+
+				if (this.LastState != PaperFoldState.PaperFoldStateBottomUnfolded) {
+					this.Finish (PaperFoldState.PaperFoldStateBottomUnfolded);
+				}
+			}
+
+			this.Animate (new PointF(0.0f, this.ContentView.Frame.Y), false);
 		}
 
-		private void UnFoldRightView()
+		private void InternalUnFoldLeftView()
 		{
+			this.TopFoldView.Hidden = true;
+			this.BottomFoldView.Hidden = true;
+			this.LeftFoldView.Hidden = false;
+			this.RightFoldView.Hidden = false;
+
+			var transform = this.ContentView.Transform;
+			var x = transform.x0 + (this.LeftFoldView.Frame.Width - transform.x0) / 4;
+
+			transform = CGAffineTransform.MakeTranslation (x, 0.0f);
+			this.ContentView.Transform = transform;
+
+			if (x >= this.LeftFoldView.Frame.Width - 2) {
+				this.AnimationTimer.Dispose();
+				transform = CGAffineTransform.MakeTranslation (this.LeftFoldView.Frame.Width, 0.0f);
+				this.ContentView.Transform = transform;
+
+				if (this.LastState != PaperFoldState.PaperFoldStateLeftUnfolded) {
+					this.Finish (PaperFoldState.PaperFoldStateLeftUnfolded);
+				}
+			}
+			this.Animate (new PointF(this.ContentView.Frame.X, 0.0f), false);
 		}
 
-		private void UnFoldBottomView()
+		private void InternalUnFoldTopView()
 		{
+			this.TopFoldView.Hidden = false;
+			this.BottomFoldView.Hidden = false;
+			this.LeftFoldView.Hidden = true;
+			this.RightFoldView.Hidden = true;
+
+			this.PaperFoldInitialPanDirection = PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionVertical;
+
+			var transform = this.ContentView.Transform;
+
+			var y = transform.y0 + (this.TopFoldView.Frame.Height - transform.y0)/8;
+
+			transform = CGAffineTransform.MakeTranslation (0.0f, y);
+			this.ContentView.Transform = transform;
+
+			if(y >= this.TopFoldView.Frame.Height-5){
+				this.AnimationTimer.Dispose ();
+				transform = CGAffineTransform.MakeTranslation (0.0f, this.TopFoldView.Frame.Height);
+				this.ContentView.Transform = transform;
+
+				if (this.LastState != PaperFoldState.PaperFoldStateTopUnfolded) {
+					this.Finish (PaperFoldState.PaperFoldStateTopUnfolded);
+				}
+			}
+
+			this.Animate (new PointF(0.0f, this.ContentView.Frame.Y), false);
+
 		}
 
-		private void UnFoldTopView()
+		private void InternalUnFoldRightView()
 		{
+			this.TopFoldView.Hidden = true;
+			this.BottomFoldView.Hidden = true;
+			this.LeftFoldView.Hidden = false;
+			this.RightFoldView.Hidden = false;
+
+			var transform = this.ContentView.Transform;
+			var x = transform.x0 + (this.RightFoldView.Frame.Width + transform.x0) / 8;
+
+			transform = CGAffineTransform.MakeTranslation (x, 0.0f);
+			this.ContentView.Transform = transform;
+
+			if (x <= -this.RightFoldView.Frame.Width + 5) {
+				this.AnimationTimer.Dispose ();
+				transform = CGAffineTransform.MakeTranslation (this.LeftFoldView.Frame.Width, 0.0f);
+				this.ContentView.Transform = transform;
+
+				if (this.LastState != PaperFoldState.PaperFoldStateRightUnfolded) {
+					this.Finish (PaperFoldState.PaperFoldStateRightUnfolded);
+				}
+			}
+			this.Animate (new PointF(this.ContentView.Frame.X, 0.0f), false);
 		}
 
-		private void RestoreView()
+
+		private void InternalRestoreView()
 		{
+			if (this.PaperFoldInitialPanDirection == PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionHorizontal) {
+
+				var transform = this.ContentView.Transform;
+				var x = transform.x0 / 4 * 3;
+				transform = CGAffineTransform.MakeTranslation(x, 0.0f);
+				this.ContentView.Transform = transform;
+
+				if ((x>- 0 && x < 5) || (x <=0 && x>-5)) {
+					this.AnimationTimer.Dispose ();
+					transform = CGAffineTransform.MakeTranslation(0.0f, 0.0f);
+					this.ContentView.Transform = transform;
+					this.Animate(new PointF(0.0f, 0.0f), false);
+
+					if(this.LastState != PaperFoldState.PaperFoldStateDefault){
+						this.Finish(PaperFoldState.PaperFoldStateDefault);
+					}
+
+					this.State = PaperFoldState.PaperFoldStateDefault;
+				} else {
+					this.Animate(new PointF(this.ContentView.Frame.X, 0.0f), false);
+				}
+			} else if (this.PaperFoldInitialPanDirection == PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionVertical) {
+
+				var transform = this.ContentView.Transform;
+				var y = transform.y0 / 4 * 3;
+				transform = CGAffineTransform.MakeTranslation(0.0f, y);
+				this.ContentView.Transform = transform;
+
+				if ((y >= 0 && y < 5) || (y <=0 && y>-5)) {
+					this.AnimationTimer.Dispose();
+					transform = CGAffineTransform.MakeTranslation(0.0f, 0.0f);
+					this.ContentView.Transform = transform;
+					this.Animate(new PointF(0.0f, 0.0f), false);
+
+					if(this.LastState != PaperFoldState.PaperFoldStateDefault){
+						this.Finish(PaperFoldState.PaperFoldStateDefault);
+					}
+
+					this.State = PaperFoldState.PaperFoldStateDefault;
+				} else {
+					this.Animate(new PointF(0.0f, this.ContentView.Frame.Y), false);
+				}
+			}			
+		}
+
+		public void UnfoldRightView()
+		{
+			this.SetPaperFoldState (PaperFoldState.PaperFoldStateRightUnfolded);
+		}
+
+		public void UnfoldLeftView()
+		{
+			this.SetPaperFoldState (PaperFoldState.PaperFoldStateLeftUnfolded);
+		}
+
+		public void UnfoldTopView()
+		{
+			this.SetPaperFoldState (PaperFoldState.PaperFoldStateTopUnfolded);
+		}
+
+		public void UnfoldBottomView()
+		{
+			this.SetPaperFoldState (PaperFoldState.PaperFoldStateBottomUnfolded);
+		}
+
+		public void RestoreToCenter()
+		{
+			this.SetPaperFoldState (PaperFoldState.PaperFoldStateDefault);
 		}
 
 		private void Animate(PointF contentOffset, bool panned)
 		{
-			/*
-			 if (self.paperFoldInitialPanDirection==PaperFoldInitialPanDirectionHorizontal)
-    {
-        float x = point.x;
-        // if offset to the right, show the left view
-        // if offset to the left, show the right multi-fold view
-        
-        if (self.state!=self.lastState) self.lastState = self.state;
-        
-        if (x>0.0)
-        {
-            if (self.enableLeftFoldDragging || !panned)
-            {
-                // set the limit of the right offset
-                if (x>=self.leftFoldView.frame.size.width)
-                {
-                    if (self.lastState != PaperFoldStateLeftUnfolded) {
-						[self finishForState:PaperFoldStateLeftUnfolded];
+			if (this.PaperFoldInitialPanDirection == PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionHorizontal) {
+				var x = contentOffset.X;
+
+				if (this.State != this.LastState) {
+					this.LastState = this.State;
+				}
+
+				if (x >= 0.0f) {
+					if (this.EnableLeftFoldDragging || !panned) {
+						if (x>= this.LeftFoldView.Frame.Width) {
+							if (this.LastState != PaperFoldState.PaperFoldStateLeftUnfolded) {
+								this.Finish (PaperFoldState.PaperFoldStateLeftUnfolded);
+							}
+							this.LastState = this.State;
+							this.State = PaperFoldState.PaperFoldStateLeftUnfolded;
+							x = this.LeftFoldView.Frame.Width;
+						}
+						this.ContentView.Transform = CGAffineTransform.MakeTranslation (x, 0.0f);
+						this.LeftFoldView.Unfold (x);
+
+						if (this.DidOffset != null) {
+							this.DidOffset (this, new PointF (x, 0.0f));
+						}
 					}
-                    self.lastState = self.state;
-                    self.state = PaperFoldStateLeftUnfolded;
-                    x = self.leftFoldView.frame.size.width;
-                }
-                [self.contentView setTransform:CGAffineTransformMakeTranslation(x, 0)];
-                //[self.leftFoldView unfoldWithParentOffset:-1*x];
-                [self.leftFoldView unfoldWithParentOffset:x];
-                
-                if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-                {
-                    [self.delegate paperFoldView:self viewDidOffset:CGPointMake(x,0)];
-                }
-            }
-        }
-        else if (x<0.0)
-        {
-            if (self.enableRightFoldDragging || !panned)
-            {
-                // set the limit of the left offset
-                // original x value not changed, to be sent to multi-fold view
-                float x1 = x;
-                if (x1<=-self.rightFoldView.frame.size.width)
-                {
-					if (self.lastState != PaperFoldStateRightUnfolded) {
-						[self finishForState:PaperFoldStateRightUnfolded];
+				} else if (x < 0.0f) {
+					if(this.EnableRightFoldDragging || !panned) {
+						var x1 = x;
+
+						if (x1 <= this.RightFoldView.Frame.Width) {
+							if(this.LastState != PaperFoldState.PaperFoldStateRightUnfolded){
+								this.Finish (PaperFoldState.PaperFoldStateRightUnfolded);
+							}
+							this.LastState = this.State;
+							this.State = PaperFoldState.PaperFoldStateRightUnfolded;
+							x1 = -this.RightFoldView.Frame.Width;
+						}
+
+						this.ContentView.Transform = CGAffineTransform.MakeTranslation (x1, 0.0f);
+						this.RightFoldView.Unfold (x);
+
+						if (this.DidOffset != null) {
+							this.DidOffset(this, new PointF(x, 0.0f));
+						}
 					}
-                    self.lastState = self.state;
-                    self.state = PaperFoldStateRightUnfolded;
-                    x1 = -self.rightFoldView.frame.size.width;
-                }
-                [self.contentView setTransform:CGAffineTransformMakeTranslation(x1, 0)];
-                [self.rightFoldView unfoldWithParentOffset:x];
-                
-                if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-                {
-                    [self.delegate paperFoldView:self viewDidOffset:CGPointMake(x,0)];
-                }
-            }
-        }
-        else
-        {
-            [self.contentView setTransform:CGAffineTransformMakeTranslation(0, 0)];
-            [self.leftFoldView unfoldWithParentOffset:-1*x];
-            [self.rightFoldView unfoldWithParentOffset:x];
-            self.state = PaperFoldStateDefault;
-            
-            if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-            {
-                [self.delegate paperFoldView:self viewDidOffset:CGPointMake(x,0)];
-            }
-        }
-    }
-    else if (self.paperFoldInitialPanDirection==PaperFoldInitialPanDirectionVertical)
-    {
-        float y = point.y;
-        // if offset to the top, show the bottom view
-        // if offset to the bottom, show the top multi-fold view
-        
-        if (self.state!=self.lastState) self.lastState = self.state;
-        
-        if (y<0.0)
-        {
-            if (self.enableBottomFoldDragging || !panned)
-            {
-                // set the limit of the top offset
-                if (-y>=self.bottomFoldView.frame.size.height)
-                {
-                    self.lastState = self.state;
-                    self.state = PaperFoldStateBottomUnfolded;
-                    y = -self.bottomFoldView.frame.size.height;
-                }
-                [self.contentView setTransform:CGAffineTransformMakeTranslation(0, y)];
-                [self.bottomFoldView unfoldWithParentOffset:y];
-                
-                if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-                {
-                    [self.delegate paperFoldView:self viewDidOffset:CGPointMake(0,y)];
-                }
-            }
-        }
-        else if (y>0.0)
-        {
-            if (self.enableTopFoldDragging || !panned)
-            {
-                // set the limit of the bottom offset
-                // original y value not changed, to be sent to multi-fold view
-                float y1 = y;
-                if (y1>=self.topFoldView.frame.size.height)
-                {
-                    self.lastState = self.state;
-                    self.state = PaperFoldStateTopUnfolded;
-                    y1 = self.topFoldView.frame.size.height;
-                }
-                [self.contentView setTransform:CGAffineTransformMakeTranslation(0, y1)];
-                [self.topFoldView unfoldWithParentOffset:y];
-                
-                if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-                {
-                    [self.delegate paperFoldView:self viewDidOffset:CGPointMake(0,y)];
-                }
-            }
-        }
-        else
-        {
-            
-            [self.contentView setTransform:CGAffineTransformMakeTranslation(0, 0)];
-            [self.bottomFoldView unfoldWithParentOffset:y];
-            [self.topFoldView unfoldWithParentOffset:y];
-            self.state = PaperFoldStateDefault;
-            
-            if ([self.delegate respondsToSelector:@selector(paperFoldView:viewDidOffset:)])
-            {
-                [self.delegate paperFoldView:self viewDidOffset:CGPointMake(0,y)];
-            }
-        }
-    }*/
+				} else {
+					this.ContentView.Transform = CGAffineTransform.MakeTranslation(0.0f, 0.0f);
+					this.LeftFoldView.Unfold (-1*x);
+					this.RightFoldView.Unfold (x);
+					this.State = PaperFoldState.PaperFoldStateDefault;
+					if (this.DidOffset != null) {
+						this.DidOffset (this, new PointF (x, 0.0f));
+					}
+				}
+			} else if (this.PaperFoldInitialPanDirection == PaperFoldInitialPanDirection.PaperFoldInitialPanDirectionVertical) {
+
+				var y = contentOffset.Y;
+
+				if (this.State != this.LastState) {
+					this.LastState = this.State;
+				}
+
+				if (y < 0.0f) {
+					if (this.EnableBottomFoldDragging || !panned) {
+
+						if (-y >= this.BottomFoldView.Frame.Height) {
+							this.LastState = this.State;
+							this.State = PaperFoldState.PaperFoldStateBottomUnfolded;
+							y = -this.BottomFoldView.Frame.Height;
+						}
+
+						this.ContentView.Transform = CGAffineTransform.MakeTranslation(0.0f, y);
+						this.BottomFoldView.Unfold(y);
+
+						if(this.DidOffset != null){
+							this.DidOffset(this, new PointF(0.0f, y));
+						}
+					}
+				} else if (y > 0.0f) {
+					if (this.EnableTopFoldDragging || !panned) {
+						var y1 = y;
+						if(y1 >= this.TopFoldView.Frame.Height){
+							this.LastState = this.State;
+							this.State = PaperFoldState.PaperFoldStateTopUnfolded;
+							y1 = this.TopFoldView.Frame.Height;
+						}
+
+						
+						this.ContentView.Transform = CGAffineTransform.MakeTranslation(0.0f, y1);
+						this.TopFoldView.Unfold(y);
+
+						if(this.DidOffset != null){
+							this.DidOffset(this, new PointF(0.0f, y));
+						}
+
+					}
+				} else {
+					this.ContentView.Transform = CGAffineTransform.MakeTranslation (0.0f, 0.0f);
+					this.BottomFoldView.Unfold (y);
+					this.TopFoldView.Unfold (y);
+					this.State = PaperFoldState.PaperFoldStateDefault;
+
+					if(this.DidOffset != null){
+						this.DidOffset(this, new PointF(0.0f, y));
+					}
+				}
+
+			}
+		}
+
+		private void SetPaperFoldState(PaperFoldState paperFoldState, bool animated, Action completionHandler)
+		{
+			this.completionHandler = completionHandler;
+			this.SetPaperFoldState (paperFoldState, animated);
+		}
+
+		private void SetPaperFoldState(PaperFoldState paperFoldState, bool animated)
+		{
+			if (animated) {
+
+				this.SetPaperFoldState (paperFoldState);
+
+			} else {
+
+				this.TopFoldView.Hidden = true;
+				this.BottomFoldView.Hidden = true;
+				this.LeftFoldView.Hidden = true;
+				this.RightFoldView.Hidden = true;
+
+				if(paperFoldState == PaperFoldState.PaperFoldStateDefault){
+					var transform = CGAffineTransform.MakeTranslation (0.0f, 0.0f);
+					this.ContentView.Transform = transform;
+
+					if(this.LastState != PaperFoldState.PaperFoldStateDefault){
+						this.Finish (PaperFoldState.PaperFoldStateDefault);
+					}
+				} else if (paperFoldState == PaperFoldState.PaperFoldStateLeftUnfolded) {
+					this.LeftFoldView.Hidden = false;
+
+					var transform = CGAffineTransform.MakeTranslation (this.LeftFoldView.Frame.Width, 0.0f);
+					this.ContentView.Transform = transform;
+					this.LeftFoldView.UnfoldWithoutAnimation ();
+
+					if (this.LastState != PaperFoldState.PaperFoldStateLeftUnfolded) {
+						this.Finish (PaperFoldState.PaperFoldStateLeftUnfolded);
+					}
+
+				} else if (paperFoldState == PaperFoldState.PaperFoldStateRightUnfolded) {
+					this.RightFoldView.Hidden = false;
+
+					var transform = CGAffineTransform.MakeTranslation (-this.RightFoldView.Frame.Width, 0.0f);
+					this.ContentView.Transform = transform;
+					this.RightFoldView.UnfoldWithoutAnimation ();
+
+					if (this.LastState != PaperFoldState.PaperFoldStateRightUnfolded) {
+						this.Finish (PaperFoldState.PaperFoldStateRightUnfolded);
+					}
+
+				}
+				this.State = paperFoldState;
+			}
+		}
+
+		private void SetPaperFoldState(PaperFoldState paperFoldState)
+		{
+			this.IsAutomatedFolding = true;
+
+			Action viewAction;
+			if (paperFoldState == PaperFoldState.PaperFoldStateDefault) {
+				viewAction = this.InternalRestoreView;
+			} else if (paperFoldState == PaperFoldState.PaperFoldStateLeftUnfolded) {
+				viewAction = this.InternalUnFoldLeftView;
+			} else if (paperFoldState == PaperFoldState.PaperFoldStateRightUnfolded) {
+				viewAction = this.InternalUnFoldRightView;
+			} else if (paperFoldState == PaperFoldState.PaperFoldStateTopUnfolded) {
+				viewAction = this.InternalUnFoldTopView;
+			} else if (paperFoldState == PaperFoldState.PaperFoldStateBottomUnfolded) {
+				viewAction = this.InternalUnFoldBottomView;
+			} else {
+				viewAction = () => { Console.WriteLine("Something went badly..."); };
+			}
+
+			this.CreateTimer(viewAction);
+		}
+
+		private void Finish(PaperFoldState paperFoldState)
+		{
+			this.ShowDividerLines (false, true);
+
+			if (this.completionHandler != null) {
+				this.completionHandler ();
+				this.completionHandler = null;
+			} else if (this.DidFoldAutomaticallToState != null) {
+				this.DidFoldAutomaticallToState (this, this.IsAutomatedFolding, paperFoldState);
+			}
+			this.IsAutomatedFolding = false;
+
+			Console.WriteLine ("Finish Called = {0}", paperFoldState);
 		}
 
 		private void ShowDividerLines(bool show)
@@ -620,7 +912,28 @@ namespace PaperFold
 
 		private void ShowDividerLines(bool show, bool animated)
 		{
+			if (this.showDividerLines == show) {
+				return;
+			}
 
+			this.showDividerLines = show;
+
+			var alpha = show ? 1 : 0;
+
+			UIView.Animate (animated ? 0.25 : 0.0, () => {
+				if(this.LeftDividerLine != null){
+					this.LeftDividerLine.Alpha = alpha;
+				}
+				if(this.RightDividerLine != null){
+					this.RightDividerLine.Alpha = alpha;
+				}
+				if(this.TopDividerLine != null){
+					this.TopDividerLine.Alpha = alpha;
+				}
+				if(this.BottomDividerLine != null){
+					this.BottomDividerLine.Alpha = alpha;
+				}
+			});
 		}
 	}
 }

@@ -64,10 +64,11 @@ namespace PaperFold
 			set{
 				base.Frame = value;
 
-				var contentViewHolderFrame = this.ContentViewHolder.Frame;
-				contentViewHolderFrame.Height = value.Height;
-				this.ContentViewHolder.Frame = contentViewHolderFrame;
-
+				if (this.ContentViewHolder != null) {
+					var contentViewHolderFrame = this.ContentViewHolder.Frame;
+					contentViewHolderFrame.Height = value.Height;
+					this.ContentViewHolder.Frame = contentViewHolderFrame;
+				}
 				foreach (var subView in this.Subviews) {
 					if (subView.GetType () == typeof(FoldView)) {
 						subView.RemoveFromSuperview ();
@@ -78,6 +79,11 @@ namespace PaperFold
 			}
 		}
 
+		public MultiFoldView ()
+			:this(new RectangleF(0.0f, 0.0f, 0.0f, 0.0f), 0, 0.0f)
+		{
+			
+		}
 
 		public MultiFoldView (RectangleF frame, int folds, float pullFactor)
 			:this(frame, FoldDirection.FoldDirectionHorizontalLeftToRight, folds, pullFactor)
@@ -90,7 +96,7 @@ namespace PaperFold
 		{
 			this.UseOptimizedScreenshot = true;
 			this.FoldDirection = foldDirection;
-			this.NumberOfFolds = NumberOfFolds;
+			this.NumberOfFolds = folds;
 
 			if (this.NumberOfFolds == 1) {
 				this.PullFactor = 0;
@@ -202,7 +208,7 @@ namespace PaperFold
 
 		}
 
-		private void Unfold(float parentOffset)
+		public void Unfold(float parentOffset)
 		{
 			this.CalculateFoldState (parentOffset);
 
@@ -245,7 +251,7 @@ namespace PaperFold
 			}
 		}
 
-		private void UnfoldView(float fraction)
+		public void UnfoldView(float fraction)
 		{
 			// start the cascading effect of unfolding
 			// with the first foldView with index FOLDVIEW_TAG+0
@@ -270,7 +276,7 @@ namespace PaperFold
 			}
 		}
 
-		private void UnfoldView(FoldView foldView, float fraction, float offset)
+		public void UnfoldView(FoldView foldView, float fraction, float offset)
 		{
 			foldView.UnfoldView (fraction);
 
